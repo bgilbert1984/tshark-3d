@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Network Visualization</title>
+    <script src="https://cdn.socket.io/4.4.1/socket.io.min.js"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Replace deprecated Three.js script with ES modules -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.154.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.154.0/examples/jsm/"
+        }
+      }
+    </script>
+    <!-- Pre-transpile the JSX code -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        #root {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+        .controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.7);
+            padding: 15px;
+            border-radius: 5px;
+            color: white;
+            z-index: 100;
+        }
+        .status {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 100;
+        }
+        .connected {
+            background-color: rgba(40,167,69,0.8);
+            color: white;
+        }
+        .disconnected {
+            background-color: rgba(220,53,69,0.8);
+            color: white;
+        }
+        .connecting {
+            background-color: rgba(255,193,7,0.8);
+            color: black;
+        }
+        .stats {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.7);
+            padding: 15px;
+            border-radius: 5px;
+            color: white;
+            z-index: 100;
+        }
+        button {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 15px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button.stop {
+            background-color: #f44336;
+        }
+        button.stop:hover {
+            background-color: #d32f2f;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- Use ES module type for the Three.js imports -->
+    <script type="module">
+        // Import Three.js using ES modules
+        import * as THREE from 'three';
+        
+        // Create global THREE reference for use in the React component
+        window.THREE = THREE;
+    </script>
+    
+    <!-- Pre-compile the JSX with Babel -->
+    <script type="text/babel" data-type="module" data-presets="react">
+        // Define colors for different protocols
+        const protocolColors = {
+            TCP: '#ff0000',
+            UDP: '#00ff00',
+            ICMP: '#0000ff',
+            HTTP: '#ff00ff',
+            HTTPS: '#00ffff',
+            DNS: '#ffff00',
+            default: '#ffffff'
+        };
+
+        // NetworkVisualization component
+        const NetworkVisualization = () => {
+            const [isConnected, setIsConnected] = React.useState(false);
+            const [isTestRunning, setIsTestRunning] = React.useState(false);
+            const [status, setStatus] = React.useState('Disconnected');
+            const [data, setData] = React.useState({ hosts: [], streams: [] });
+            const [error, setError] = React.useState(null);
+            
+            const socketRef = React.useRef(null);
+            const sceneRef = React.useRef(null);
+            const cameraRef = React.useRef(null);
+            const rendererRef = React.useRef(null);
+            const nodesRef = React.useRef(new Map());
+            const edgesRef = React.useRef(new Map());
+            const containerRef = React.useRef(null);
+            
+            // Setup Three.js scene
+            React.useEffect(() => {
+                // Create scene
+                const scene = new THREE.Scene();
+                scene.background = new THREE.Color(0x000000);
+                sceneRef.current = scene;
+                
+                // Create camera
+                const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                camera.position.z = 20;
+                camera.position.y = 10;
+                cameraRef.current = camera;
+                
+                // Create renderer
+                const renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                containerRef.current.appendChild(renderer.domElement);
+                rendererRef.current = renderer;
+                
+                // Add ambient light
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+                scene.add(ambientLight);
+                
+                // Add directional light
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+                directionalLight.position.set(10, 10, 10);
+                scene.add(directionalLight);
+                
+                // Handle window resize
+                const handleResize = () => {
+                    camera.aspect = window.innerWidth / window.innerHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(window.innerWidth, window.innerHeight);
+                };
+                window.addEventListener('resize', handleResize);
+                
+                // Animation loop
+                const animate = () => {
+                    requestAnimationFrame(animate);
+                    
+                    // Rotate the camera around the scene
+                    const time = Date.now() * 0.0005;
+                    camera.position.x = Math.sin(time) * 20;
+                    camera.position.z = Math.cos(time) * 20;
+                    camera.lookAt(scene.position);
+                    
+                    renderer.render(scene, camera);
+                };
+                animate();
+                
+                // Cleanup
+                return () => {
+                    window.removeEventListener('resize', handleResize);
+                    containerRef.current?.removeChild(renderer.domElement);
+                    scene.clear();
+                };
+            }, []);
+            
+            // Connect to socket.io server
+            const connectToServer = () => {
+                try {
+                    setStatus('Connecting...');
+                    
+                    // Update to connect to port 3001 (combined server)
+                    socketRef.current = io('http://localhost:3001', {
+                        transports: ['websocket', 'polling'],
+                        reconnection: true,
+                        reconnectionAttempts: 5,
+                        reconnectionDelay: 1000,
+                        timeout: 20000
+                    });
+                    
+                    socketRef.current.on('connect', () => {
+                        setIsConnected(true);
+                        setStatus('Connected');
+                        setError(null);
+                    });
+                    
+                    socketRef.current.on('disconnect', (reason) => {
+                        setIsConnected(false);
+                        setStatus(`Disconnected: ${reason}`);
+                    });
+                    
+                    socketRef.current.on('connect_error', (err) => {
+                        setError(`Connection error: ${err.message}`);
+                        setStatus('Connection Error');
+                        setIsConnected(false);
+                    });
+                    
+                    socketRef.current.on('networkUpdate', (newData) => {
+                        setData(newData);
+                        updateVisualization(newData);
+                    });
+                    
+                    socketRef.current.on('error', (err) => {
+                        setError(`Server error: ${err.message || 'Unknown error'}`);
+                    });
+                } catch (err) {
+                    setError(`Failed to connect: ${err.message}`);
+                    setStatus('Connection Failed');
+                }
+            };
+            
+            // Update Three.js visualization based on network data
+            const updateVisualization = (data) => {
+                const scene = sceneRef.current;
+                if (!scene) return;
+                
+                // Calculate node positions in a circle
+                const radius = 10;
+                const nodePositions = new Map();
+                const angleStep = (2 * Math.PI) / Math.max(1, data.hosts.length);
+                
+                data.hosts.forEach((host, index) => {
+                    const angle = angleStep * index;
+                    const x = radius * Math.cos(angle);
+                    const z = radius * Math.sin(angle);
+                    nodePositions.set(host.id, { x, y: 0, z });
+                });
+                
+                // Update nodes
+                data.hosts.forEach((host) => {
+                    const position = nodePositions.get(host.id);
+                    if (!position) return;
+                    
+                    if (!nodesRef.current.has(host.id)) {
+                        // Create new node
+                        const geometry = new THREE.SphereGeometry(
+                            0.5 + (Math.log(host.packets || 1) / Math.log(10)) * 0.2,
+                            32,
+                            32
+                        );
+                        const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
+                        const mesh = new THREE.Mesh(geometry, material);
+                        mesh.position.set(position.x, position.y, position.z);
+                        
+                        scene.add(mesh);
+                        nodesRef.current.set(host.id, mesh);
+                    } else {
+                        // Update existing node
+                        const mesh = nodesRef.current.get(host.id);
+                        mesh.position.set(position.x, position.y, position.z);
+                        
+                        // Update size based on packet count
+                        const size = 0.5 + (Math.log(host.packets || 1) / Math.log(10)) * 0.2;
+                        mesh.scale.set(size, size, size);
+                    }
+                });
+                
+                // Remove nodes that are no longer in the data
+                nodesRef.current.forEach((mesh, id) => {
+                    if (!data.hosts.some(host => host.id === id)) {
+                        scene.remove(mesh);
+                        nodesRef.current.delete(id);
+                    }
+                });
+                
+                // Update edges (connections between nodes)
+                data.streams.forEach((stream) => {
+                    const sourcePos = nodePositions.get(stream.source);
+                    const targetPos = nodePositions.get(stream.target);
+                    if (!sourcePos || !targetPos) return;
+                    
+                    const edgeKey = `${stream.source}-${stream.target}-${stream.protocol}`;
+                    
+                    if (!edgesRef.current.has(edgeKey)) {
+                        // Create new edge
+                        const points = [
+                            new THREE.Vector3(sourcePos.x, sourcePos.y, sourcePos.z),
+                            new THREE.Vector3(targetPos.x, targetPos.y, targetPos.z)
+                        ];
+                        const geometry = new THREE.BufferGeometry().setFromPoints(points);
+                        
+                        const protocol = stream.protocol.toUpperCase();
+                        const color = protocolColors[protocol] || protocolColors.default;
+                        const material = new THREE.LineBasicMaterial({
+                            color: new THREE.Color(color),
+                            linewidth: 1
+                        });
+                        
+                        const line = new THREE.Line(geometry, material);
+                        scene.add(line);
+                        edgesRef.current.set(edgeKey, line);
+                    } else {
+                        // Update existing edge position
+                        const line = edgesRef.current.get(edgeKey);
+                        const positions = line.geometry.attributes.position.array;
+                        
+                        positions[0] = sourcePos.x;
+                        positions[1] = sourcePos.y;
+                        positions[2] = sourcePos.z;
+                        positions[3] = targetPos.x;
+                        positions[4] = targetPos.y;
+                        positions[5] = targetPos.z;
+                        
+                        line.geometry.attributes.position.needsUpdate = true;
+                    }
+                });
+                
+                // Remove edges that are no longer in the data
+                edgesRef.current.forEach((line, key) => {
+                    const [sourceId, targetId, protocol] = key.split('-');
+                    if (!data.streams.some(stream => 
+                        stream.source === sourceId && 
+                        stream.target === targetId &&
+                        stream.protocol === protocol
+                    )) {
+                        scene.remove(line);
+                        edgesRef.current.delete(key);
+                    }
+                });
+            };
+            
+            // Handle start test traffic
+            const startTestTraffic = () => {
+                if (socketRef.current?.connected) {
+                    socketRef.current.emit('startCapture', 'test');
+                    setIsTestRunning(true);
+                } else {
+                    setError('Not connected to server');
+                }
+            };
+            
+            // Handle stop test traffic
+            const stopTestTraffic = () => {
+                if (socketRef.current?.connected) {
+                    socketRef.current.emit('stopTestTraffic');
+                    setIsTestRunning(false);
+                    // Reset visualization
+                    setData({ hosts: [], streams: [] });
+                } else {
+                    setError('Not connected to server');
+                }
+            };
+            
+            // Handle start real traffic capture
+            const startRealCapture = () => {
+                if (socketRef.current?.connected) {
+                    socketRef.current.emit('startCapture', 'any');
+                    setIsTestRunning(false);
+                } else {
+                    setError('Not connected to server');
+                }
+            };
+            
+            // Handle start realistic traffic
+            const startRealisticTraffic = () => {
+                if (socketRef.current?.connected) {
+                    socketRef.current.emit('startCapture', 'realistic');
+                    setIsTestRunning(false);
+                } else {
+                    setError('Not connected to server');
+                }
+            };
+            
+            return (
+                <div ref={containerRef} style={{ width: '100%', height: '100%' }}>
+                    <div className={`status ${isConnected ? 'connected' : 'disconnected'}`}>
+                        {status}
+                    </div>
+                    
+                    <div className="controls">
+                        <h3>Controls</h3>
+                        {!isConnected ? (
+                            <button onClick={connectToServer}>Connect to Server</button>
+                        ) : (
+                            <>
+                                {!isTestRunning ? (
+                                    <>
+                                        <button onClick={startTestTraffic}>Start Test Traffic</button>
+                                        <button onClick={startRealisticTraffic}>Realistic Traffic</button>
+                                    </>
+                                ) : (
+                                    <button className="stop" onClick={stopTestTraffic}>Stop Test Traffic</button>
+                                )}
+                                <button onClick={startRealCapture}>Capture Real Traffic</button>
+                            </>
+                        )}
+                    </div>
+                    
+                    <div className="stats">
+                        <h3>Network Stats</h3>
+                        <div>Hosts: {data.hosts.length}</div>
+                        <div>Connections: {data.streams.length}</div>
+                        {isTestRunning && <div>Using test traffic</div>}
+                        {error && <div style={{ color: 'red', marginTop: '10px' }}>{error}</div>}
+                    </div>
+                </div>
+            );
+        };
+
+        // Render the app
+        ReactDOM.createRoot(document.getElementById('root')).render(<NetworkVisualization />);
+    </script>
+</body>
+</html>
