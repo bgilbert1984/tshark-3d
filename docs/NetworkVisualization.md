@@ -1,3 +1,105 @@
+Usage
+Starting the server
+The server requires root privileges to capture network traffic. For testing, you can use the --test-only flag to run without root.
+For test traffic (no root required):
+bashCopypython serve_visualization.py --test-only
+For real traffic capture (requires root/sudo):
+bashCopysudo python serve_visualization.py
+Command-line options
+Copypython serve_visualization.py --help
+
+usage: serve_visualization.py [-h] [--port PORT] [--interface INTERFACE] [--test-only] [--debug] [--pcap PCAP]
+
+Network Traffic Visualization Server
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --port PORT           Port to run the server on (default: 3001)
+  --interface INTERFACE Network interface to capture from (default: any)
+  --test-only           Run in test mode only (no real traffic capture)
+  --debug               Enable debug mode
+  --pcap PCAP           Read from PCAP file instead of live capture
+Accessing the application
+Open your web browser and navigate to:
+Copyhttp://localhost:3001/
+Using the Visualization
+
+Connect to Server: The application will automatically try to connect to the server.
+Generate Test Traffic: For demo purposes, click "Generate Test Traffic".
+Interact with the 3D Visualization:
+
+Rotate, pan, and zoom using mouse controls
+Hover over nodes and connections to see basic information
+Click on a connection to open the packet inspector
+
+
+
+Advanced Features
+Packet Inspector
+The packet inspector allows you to examine detailed information about the packets in a selected connection:
+
+Basic packet properties (source, destination, protocol, size)
+Protocol-specific details (TCP flags, HTTP headers, DNS queries)
+Payload data (when available)
+Filter packets to find specific information
+
+Traffic Types
+
+Test Traffic: Simple random traffic generation for testing
+Realistic Traffic: Simulated traffic with realistic network patterns
+Real Traffic: Actual network traffic captured from your selected interface
+
+Development
+Project Structure
+Copytshark-3d/
+├── NetworkVisualization.html       # Frontend visualization
+├── serve_visualization.py          # Main server script
+├── create_favicon.py               # Script to create favicon
+├── deep_packet_inspection.py       # DPI functionality
+├── test_traffic_generator.py       # Traffic simulation
+├── socket_handlers.py              # Socket.IO event handlers
+├── src/                            # React/TypeScript components
+│   ├── components/                 # UI components 
+│   │   ├── NetworkVisualization.tsx # Main visualization component
+│   │   ├── PacketInspector.tsx     # Packet inspection component
+│   │   └── TestTrafficControls.tsx # Traffic control UI
+│   ├── types/                      # TypeScript type definitions
+│   └── main.tsx                    # Entry point
+├── static/                         # Static assets
+└── venv/                           # Python virtual environment
+Extending the Application
+Adding a New Protocol
+
+Update the _get_protocol method in NetworkTrafficAggregator class
+Add a color for the protocol in the protocolColors object in NetworkVisualization.tsx
+Add extraction logic in the appropriate method (e.g., _extract_http_info as an example)
+
+Adding New Visualization Features
+The visualization is built using Three.js via React Three Fiber. To add new visualization elements:
+
+Create new components in the src/components/ directory
+Import and use them in the NetworkGraph component
+
+Troubleshooting
+Common Issues
+
+"Permission denied": For real traffic capture, you need to run the server with sudo privileges.
+Connection refused: Make sure the server is running on the expected port.
+No traffic showing: Try using test traffic generation to verify the visualization is working.
+tshark not found: Ensure Wireshark/tshark is properly installed and in your PATH.
+
+Debugging
+Use the --debug flag to enable more verbose logging:
+bashCopysudo python serve_visualization.py --debug
+Check the browser console for frontend errors.
+License
+This project is licensed under the MIT License - see the LICENSE file for details.
+Acknowledgments
+
+Wireshark/tshark for packet capture functionality
+Three.js and React Three Fiber for 3D visualization
+Socket.IO for real-time communication
+
 # TShark-3D: Interactive 3D Network Traffic Visualization
 
 TShark-3D is a powerful, interactive tool for visualizing network traffic in 3D with deep packet inspection capabilities. The project combines the packet capturing abilities of tshark (Wireshark's command-line interface) with a beautiful 3D visualization using Three.js and React.
