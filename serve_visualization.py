@@ -45,6 +45,23 @@ class NetworkStream:
     packets: int = 0
     bytes: int = 0
     timestamp: float = 0.0
+    
+@dataclass
+class DetailedPacket:
+    id: str
+    timestamp: float
+    sourceIP: str
+    destinationIP: str
+    protocol: str
+    length: int
+    ttl: Optional[int] = None
+    sourcePort: Optional[str] = None
+    destinationPort: Optional[str] = None
+    tcpFlags: Optional[Dict[str, bool]] = None
+    httpInfo: Optional[Dict[str, Any]] = None
+    dnsInfo: Optional[Dict[str, Any]] = None
+    payload: Optional[str] = None
+    raw_data: Optional[Dict[str, Any]] = None
 
 @dataclass
 class WiresharkData:
@@ -56,6 +73,9 @@ class NetworkTrafficAggregator:
         self.hosts: Dict[str, NetworkHost] = {}
         self.streams: Dict[str, NetworkStream] = {}
         self.host_id_counter = 0
+        self.packets: Dict[str, List[DetailedPacket]] = {}  # Store packets by stream key
+        self.max_packets_per_stream = 100  # Limit packet storage
+        self.packet_id_counter = 0
 
     def add_packet(self, packet: Dict[str, Any]) -> Dict[str, Any]:
         ip_layer = packet["_source"]["layers"]["ip"]
@@ -90,8 +110,134 @@ class NetworkTrafficAggregator:
         stream.packets += 1
         stream.bytes += bytes_transferred
         stream.timestamp = timestamp
+        
+        # Create and store detailed packet information
+        detailed_packet = self._extract_packet_details(packet, src_ip, dst_ip, bytes_transferred, protocol, timestamp)
+        
+        # Store packet by stream key with limit
+        if stream_key not in self.packets:
+            self.packets[stream_key] = []
+            
+        self.packets[stream_key].append(detailed_packet)
+        
+        # Enforce packet storage limit
+        if len(self.packets[stream_key]) > self.max_packets_per_stream:
+            self.packets[stream_key].pop(0)  # Remove oldest packet
 
         return self._get_visualization_data()
+    
+    def _extract_packet_details(self, packet: Dict[str, Any], 
+                               src_ip: str = None, dst_ip: str = None, 
+                               bytes_transferred: int = None, 
+                               protocol: str = None, 
+                               timestamp: float = None) -> DetailedPacket:
+        """Extract detailed information about the packet for deeper inspection"""
+        self.packet_id_counter += 1
+        layers = packet["_source"]["layers"]
+        
+        # Use provided values or extract from packet
+        src_ip = src_ip or layers["ip"]["ip.src"]
+        dst_ip = dst_ip or layers["ip"]["ip.dst"]
+        bytes_transferred = bytes_transferred or int(layers["ip"]["ip.len"])
+        protocol = protocol or self._get_protocol(packet)
+        timestamp = timestamp or float(layers["frame"]["frame.time_epoch"]) * 1000
+        
+        # Extract TTL if available
+        ttl = int(layers["ip"].get("ip.ttl", 0)) if "ip.ttl" in layers["ip"] else None
+        
+        # Extract port information
+        src_port = None
+        dst_port = None
+        if "tcp" in layers:
+            src_port = layers["tcp"].get("tcp.srcport")
+            dst_port = layers["tcp"].get("tcp.dstport")
+        elif "udp" in layers:
+            src_port = layers["udp"].get("udp.srcport")
+            dst_port = layers["udp"].get("udp.dstport")
+            
+        # Extract TCP flags
+        tcp_flags = None
+        if "tcp" in layers:
+            tcp_layer = layers["tcp"]
+            tcp_flags = {
+                "syn": tcp_layer.get("tcp.flags.syn") == "1",
+                "ack": tcp_layer.get("tcp.flags.ack") == "1", 
+                "fin": tcp_layer.get("tcp.flags.fin") == "1",
+                "rst": tcp_layer.get("tcp.flags.reset") == "1",
+                "psh": tcp_layer.get("tcp.flags.push") == "1",
+                "urg": tcp_layer.get("tcp.flags.urg") == "1"
+            }
+            
+        # Extract HTTP information
+        http_info = None
+        if "http" in layers:
+            http_layer = layers["http"]
+            http_info = {}
+            
+            # HTTP Request
+            if "http.request.method" in http_layer:
+                http_info["method"] = http_layer["http.request.method"]
+                http_info["uri"] = http_layer.get("http.request.uri", "")
+                http_info["host"] = http_layer.get("http.host", "")
+                http_info["userAgent"] = http_layer.get("http.user_agent", "")
+                
+            # HTTP Response
+            elif "http.response" in http_layer or "http.response_code" in http_layer:
+                http_info["statusCode"] = http_layer.get("http.response.code", "")
+                http_info["statusPhrase"] = http_layer.get("http.response.phrase", "")
+                http_info["contentType"] = http_layer.get("http.content_type", "")
+                http_info["contentLength"] = http_layer.get("http.content_length", "")
+                
+            # Common HTTP headers
+            for key, value in http_layer.items():
+                if key.startswith("http.") and key not in ["http.request", "http.response"]:
+                    cleaned_key = key.replace("http.", "")
+                    http_info[cleaned_key] = value
+                    
+        # Extract DNS information
+        dns_info = None
+        if "dns" in layers:
+            dns_layer = layers["dns"]
+            dns_info = {
+                "isResponse": dns_layer.get("dns.flags.response", "0") == "1",
+                "queryName": dns_layer.get("dns.qry.name", ""),
+                "queryType": dns_layer.get("dns.qry.type", ""),
+                "responseCode": dns_layer.get("dns.flags.rcode", "")
+            }
+            
+            # Extract answers if available
+            if "dns.a" in dns_layer:
+                if isinstance(dns_layer["dns.a"], list):
+                    dns_info["answers"] = dns_layer["dns.a"]
+                else:
+                    dns_info["answers"] = [dns_layer["dns.a"]]
+            
+        # Extract payload if available
+        payload = None
+        if "data" in layers and "data.data" in layers["data"]:
+            hex_data = layers["data"]["data.data"]
+            try:
+                # Try to decode the hex data
+                payload = bytes.fromhex(hex_data).decode('utf-8', errors='replace')
+            except (ValueError, UnicodeDecodeError):
+                payload = f"HEX:{hex_data}"
+                
+        return DetailedPacket(
+            id=str(self.packet_id_counter),
+            timestamp=timestamp,
+            sourceIP=src_ip,
+            destinationIP=dst_ip,
+            protocol=protocol,
+            length=bytes_transferred,
+            ttl=ttl,
+            sourcePort=src_port,
+            destinationPort=dst_port,
+            tcpFlags=tcp_flags,
+            httpInfo=http_info,
+            dnsInfo=dns_info,
+            payload=payload,
+            raw_data=None  # Don't store the full packet to save memory
+        )
 
     def _get_or_create_host(self, ip: str) -> NetworkHost:
         for host in self.hosts.values():
@@ -108,10 +254,51 @@ class NetworkTrafficAggregator:
 
     def _get_protocol(self, packet: Dict[str, Any]) -> str:
         layers = packet["_source"]["layers"]
+        
+        # Check application layer protocols first
+        if "http" in layers:
+            return "HTTP"
+        elif "tls" in layers:
+            return "HTTPS"  # Assume TLS is HTTPS
+        elif "dns" in layers:
+            return "DNS"
+        
+        # Check transport layer
         if "tcp" in layers:
+            tcp_layer = layers["tcp"]
+            
+            # Check for well-known ports
+            if "tcp.dstport" in tcp_layer:
+                dst_port = tcp_layer["tcp.dstport"]
+                if dst_port == "80":
+                    return "HTTP"
+                elif dst_port == "443":
+                    return "HTTPS"
+                elif dst_port == "22":
+                    return "SSH"
+                elif dst_port == "21":
+                    return "FTP"
+                elif dst_port == "23":
+                    return "TELNET"
+                
             return "TCP"
         elif "udp" in layers:
+            udp_layer = layers["udp"]
+            
+            # Check for well-known ports
+            if "udp.dstport" in udp_layer:
+                dst_port = udp_layer["udp.dstport"]
+                if dst_port == "53":
+                    return "DNS"
+                elif dst_port == "123":
+                    return "NTP"
+                elif dst_port == "67" or dst_port == "68":
+                    return "DHCP"
+                    
             return "UDP"
+        elif "icmp" in layers:
+            return "ICMP"
+            
         return "OTHER"
 
     def _get_visualization_data(self) -> Dict[str, Any]:
@@ -119,7 +306,23 @@ class NetworkTrafficAggregator:
             "hosts": [asdict(host) for host in self.hosts.values()],
             "streams": [asdict(stream) for stream in self.streams.values()]
         }
-
+        
+    def get_packet_details(self, source_id: str, target_id: str, protocol: str) -> List[Dict[str, Any]]:
+        """Return detailed packet information for a specific connection"""
+        stream_key = f"{source_id}-{target_id}-{protocol}"
+        
+        # Check if we have packets for this stream
+        if stream_key in self.packets:
+            # Convert packets to dictionaries and return
+            return [asdict(packet) for packet in self.packets[stream_key]]
+            
+        # Try the reverse direction
+        reverse_key = f"{target_id}-{source_id}-{protocol}"
+        if reverse_key in self.packets:
+            return [asdict(packet) for packet in self.packets[reverse_key]]
+            
+        # No packets found
+        return []
 
 def start_capture(network_interface='any'):
     aggregator = NetworkTrafficAggregator()
@@ -607,3 +810,28 @@ if __name__ == '__main__':
         print(f"Error starting server: {e}")
         print("\nTIP: Make sure you're running this script from within the virtual environment.")
         print("Use: source venv/bin/activate && python serve_visualization.py")
+
+@socketio.on('requestPacketDetails')
+def handle_packet_details_request(data):
+    """Handler for packet detail requests from frontend"""
+    source_id = data.get('sourceId')
+    target_id = data.get('targetId')
+    protocol = data.get('protocol')
+    
+    if not all([source_id, target_id, protocol]):
+        print(f"Invalid packet details request: missing parameters. Got: {data}")
+        return
+    
+    print(f"Packet details requested for connection: {source_id}-{target_id}-{protocol}")
+    
+    # Use the global test traffic generator's aggregator if it exists and is running
+    if test_traffic_generator.running:
+        packets = test_traffic_generator.aggregator.get_packet_details(source_id, target_id, protocol)
+    else:
+        # Create a new aggregator just for this request
+        # This is a temporary solution - in a production app, you'd want to keep the aggregator in a global state
+        aggregator = NetworkTrafficAggregator()
+        packets = aggregator.get_packet_details(source_id, target_id, protocol)
+    
+    print(f"Found {len(packets)} packets for connection")
+    socketio.emit('packetDetails', {"packets": packets})

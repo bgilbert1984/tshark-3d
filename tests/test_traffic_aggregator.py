@@ -125,6 +125,105 @@ class TestNetworkTrafficAggregator(unittest.TestCase):
         
         # Check that UDP was detected
         self.assertEqual(stream.protocol, "UDP")
+        
+        # Reset aggregator
+        self.aggregator = NetworkTrafficAggregator()
+        
+        # HTTP packet (TCP on port 80)
+        http_packet = {
+            "_source": {
+                "layers": {
+                    "frame": {"frame.time_epoch": str(time.time())},
+                    "ip": {
+                        "ip.src": "192.168.1.1",
+                        "ip.dst": "192.168.1.2",
+                        "ip.len": "500"
+                    },
+                    "tcp": {
+                        "tcp.srcport": "12345",
+                        "tcp.dstport": "80"
+                    },
+                    "http": {
+                        "http.request.method": "GET",
+                        "http.request.uri": "/index.html",
+                        "http.host": "example.com"
+                    }
+                }
+            }
+        }
+        self.aggregator.add_packet(http_packet)
+        
+        # Get the first stream
+        stream_id = list(self.aggregator.streams.keys())[0]
+        stream = self.aggregator.streams[stream_id]
+        
+        # Check that HTTP was detected
+        self.assertEqual(stream.protocol, "HTTP")
+        
+        # Reset aggregator
+        self.aggregator = NetworkTrafficAggregator()
+        
+        # HTTPS packet (TCP on port 443)
+        https_packet = {
+            "_source": {
+                "layers": {
+                    "frame": {"frame.time_epoch": str(time.time())},
+                    "ip": {
+                        "ip.src": "192.168.1.1",
+                        "ip.dst": "192.168.1.2",
+                        "ip.len": "300"
+                    },
+                    "tcp": {
+                        "tcp.srcport": "12345",
+                        "tcp.dstport": "443"
+                    },
+                    "tls": {
+                        "tls.handshake": "16"
+                    }
+                }
+            }
+        }
+        self.aggregator.add_packet(https_packet)
+        
+        # Get the first stream
+        stream_id = list(self.aggregator.streams.keys())[0]
+        stream = self.aggregator.streams[stream_id]
+        
+        # Check that HTTPS was detected
+        self.assertEqual(stream.protocol, "HTTPS")
+        
+        # Reset aggregator
+        self.aggregator = NetworkTrafficAggregator()
+        
+        # DNS packet (UDP on port 53)
+        dns_packet = {
+            "_source": {
+                "layers": {
+                    "frame": {"frame.time_epoch": str(time.time())},
+                    "ip": {
+                        "ip.src": "192.168.1.1",
+                        "ip.dst": "8.8.8.8",
+                        "ip.len": "75"
+                    },
+                    "udp": {
+                        "udp.srcport": "12345",
+                        "udp.dstport": "53"
+                    },
+                    "dns": {
+                        "dns.qry.name": "example.com",
+                        "dns.flags.response": "0"
+                    }
+                }
+            }
+        }
+        self.aggregator.add_packet(dns_packet)
+        
+        # Get the first stream
+        stream_id = list(self.aggregator.streams.keys())[0]
+        stream = self.aggregator.streams[stream_id]
+        
+        # Check that DNS was detected
+        self.assertEqual(stream.protocol, "DNS")
 
     def test_get_or_create_host(self):
         """Test that hosts are correctly created or retrieved"""
@@ -144,6 +243,100 @@ class TestNetworkTrafficAggregator(unittest.TestCase):
         self.assertEqual(host3.ip, "192.168.1.2")
         self.assertEqual(host3.id, "2")
         self.assertIsNot(host1, host3)  # Should be different objects
+        
+    def test_deep_packet_inspection(self):
+        """Test deep packet inspection capabilities"""
+        # HTTP packet with detailed data
+        http_packet = {
+            "_source": {
+                "layers": {
+                    "frame": {
+                        "frame.time_epoch": str(time.time()),
+                        "frame.len": "1024"
+                    },
+                    "ip": {
+                        "ip.src": "192.168.1.1",
+                        "ip.dst": "192.168.1.2",
+                        "ip.len": "1000",
+                        "ip.ttl": "64"
+                    },
+                    "tcp": {
+                        "tcp.srcport": "12345",
+                        "tcp.dstport": "80",
+                        "tcp.flags": "0x0018",  # PSH, ACK
+                        "tcp.flags.syn": "0",
+                        "tcp.flags.ack": "1",
+                        "tcp.flags.push": "1"
+                    },
+                    "http": {
+                        "http.request.method": "POST",
+                        "http.request.uri": "/api/data",
+                        "http.host": "example.com",
+                        "http.user_agent": "Mozilla/5.0",
+                        "http.content_type": "application/json",
+                        "http.content_length": "250"
+                    },
+                    "data": {
+                        "data.data": "7b2264617461223a202268656c6c6f20776f726c64227d"  # {"data": "hello world"}
+                    }
+                }
+            }
+        }
+        
+        # If the enhanced _extract_packet_details method exists, test it
+        if hasattr(self.aggregator, '_extract_packet_details'):
+            details = self.aggregator._extract_packet_details(http_packet)
+            self.assertIsNotNone(details)
+            self.assertEqual(details.get('protocol'), 'HTTP')
+            self.assertEqual(details.get('sourceIP'), '192.168.1.1')
+            self.assertEqual(details.get('destinationIP'), '192.168.1.2')
+            self.assertEqual(details.get('sourcePort'), '12345')
+            self.assertEqual(details.get('destinationPort'), '80')
+            self.assertEqual(details.get('httpMethod'), 'POST')
+            self.assertEqual(details.get('httpUri'), '/api/data')
+            
+        # DNS packet with query and response
+        dns_packet = {
+            "_source": {
+                "layers": {
+                    "frame": {
+                        "frame.time_epoch": str(time.time()),
+                        "frame.len": "120"
+                    },
+                    "ip": {
+                        "ip.src": "192.168.1.1",
+                        "ip.dst": "8.8.8.8",
+                        "ip.len": "100",
+                        "ip.ttl": "64"
+                    },
+                    "udp": {
+                        "udp.srcport": "53124",
+                        "udp.dstport": "53"
+                    },
+                    "dns": {
+                        "dns.id": "0x1234",
+                        "dns.flags.response": "0",
+                        "dns.flags.opcode": "0",
+                        "dns.qry.name": "example.com",
+                        "dns.qry.type": "1",  # A record
+                        "dns.count.queries": "1"
+                    }
+                }
+            }
+        }
+        
+        # If the enhanced _extract_packet_details method exists, test it
+        if hasattr(self.aggregator, '_extract_packet_details'):
+            details = self.aggregator._extract_packet_details(dns_packet)
+            self.assertIsNotNone(details)
+            self.assertEqual(details.get('protocol'), 'DNS')
+            self.assertEqual(details.get('sourceIP'), '192.168.1.1')
+            self.assertEqual(details.get('destinationIP'), '8.8.8.8')
+            self.assertEqual(details.get('sourcePort'), '53124')
+            self.assertEqual(details.get('destinationPort'), '53')
+            self.assertEqual(details.get('dnsQueryName'), 'example.com')
+            self.assertEqual(details.get('dnsQueryType'), '1')
+            self.assertEqual(details.get('dnsIsResponse'), '0')
 
 if __name__ == "__main__":
     unittest.main()
